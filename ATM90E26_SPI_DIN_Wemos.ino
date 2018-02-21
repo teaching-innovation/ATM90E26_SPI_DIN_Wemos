@@ -12,16 +12,21 @@
   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
-#define DEBUG 1
+#define DEBUG 1 //remove 1 to see serial debug via USB
 
 #include <ESP8266WiFi.h>
 #include <FS.h> 
 #include <ArduinoJson.h>  //Config storage
 #include <ESP8266WebServer.h>
 #include <SPI.h>
-#include "energyic_SPI.h"     //SPI Metering Chip - https://github.com/whatnick/ATM90E36_Arduino
+#include "energyic_SPI.h"     //SPI Metering Chip - https://github.com/whatnick/ATM90E26_Arduino change JP
 
-#include <U8g2lib.h>      //OLED Driver
+#include <PubSubClient.h> //for MQTT change JP
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+#include <U8g2lib.h>      //OLED Driver - sketch -> Include Libary -> Manage Libaries -> search "U8g2"
 #ifdef U8X8_HAVE_HW_SPI
 #include <SPI.h>
 #endif
@@ -37,13 +42,26 @@ extern "C" {
 std::unique_ptr<ESP8266WebServer> server; //Define webserver
 
 //-----Config variables-----
+  //MQTT Config
+  #define mqtt_server "192.168.0.0"
+  #define mqtt_user "username"
+  #define mqtt_password "password"
+  #define mqtt_port 1883   
+  
+  /************* MQTT TOPICS (change these topics as you wish)  **************************/
+  #define voltage_topic "whatnick/voltage"
+  #define current_topic "whatnick/current"
+  #define power_topic "whatnick/power"
+  #define powerFactor_topic "whatnick/powerFactor"
+  #define SENSORNAME "whatnick"
+
   //Wifi
-  char wifi_ssid[64]     = "";
-  char wifi_password[64] = "";
+  char wifi_ssid[64]     = "SSID";
+  char wifi_password[64] = "wifiPassword";
   
   //Thingspeak
-  char ts_server[50] = "api.thingspeak.com";
-  char ts_auth[36] = "THINGSPEAK_KEY";// Sign up on thingspeak and get WRITE API KEY.
+//  char ts_server[50] = "api.thingspeak.com";            //this is not required for MQTT version
+//  char ts_auth[36] = "THINGSPEAK_KEY";// Sign up on thingspeak and get WRITE API KEY.  //this is not required for MQTT version
   
   //Calibration
   uint32_t eic1_ugain=0x6810;
@@ -134,11 +152,14 @@ void setup() {
   u8g2.setFont(u8g2_font_5x8_tr);
 
   readTSConfig();
-
   wifi_attemptToConnect();
   
   setupWebserver();
   
+  delay(2000);  
+  client.setServer(mqtt_server, mqtt_port);
+  //client.setCallback(callback);
+
   DEBUG_PRINTLN("Starting metering");
   setupMetering();
 
@@ -156,7 +177,8 @@ void loop() {
   yield();
   if (sampleCount > 20)
   {
-    sendThingSpeak();
+   // sendThingSpeak();
+    sendMQTT();
     sampleCount = 0;
   }
   if ((curMillis - prevMillis) > 500)
@@ -182,60 +204,46 @@ void checkPins(){
 }
 
 
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    // If you do not want to use a username and password, change next line to
+    // if (client.connect("ESP8266Client")) {
+    if (client.connect(SENSORNAME, mqtt_user, mqtt_password)) {
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
 
-void sendThingSpeak() {
+void sendMQTT() {
   //TODO: Compute averages from last n-readings
   float Vrms1 = v1;
   float realPower1 = r1;
   float Crms1 = i1;
   float powerFactor1 = pf1;
 
-  float Vrms2 = v2;
-  float realPower2 = r2;
-  float Crms2 = i2;
-  float powerFactor2 = pf2;
   if(WiFi.status() == WL_CONNECTED)
   {
-     WiFiClient client;
-    const int httpPort = 80;
-    if (!client.connect(ts_server, 80)) {
-      DEBUG_PRINTLN("connection failed");
-      return;
-    }
-    //if (client.connect(ts_server, 80)) { //   "184.106.153.149" or api.thingspeak.com
-      String postStr = String(ts_auth);
-      postStr += "&field1=";
-      postStr += String(Vrms1);
-      postStr += "&field2=";
-      postStr += String(realPower1);
-      postStr += "&field3=";
-      postStr += String(Crms1);
-      postStr += "&field4=";
-      postStr += String(powerFactor1);
-      postStr += "&field5=";
-      postStr += String(Vrms2);
-      postStr += "&field6=";
-      postStr += String(realPower2);
-      postStr += "&field7=";
-      postStr += String(Crms2);
-      postStr += "&field8=";
-      postStr += String(powerFactor2);
-      postStr += "\r\n\r\n";
-  
-      client.print("POST /update HTTP/1.1\n");
-      client.print("Host: api.thingspeak.com\n");
-      client.print("Connection: close\n");
-      client.print("X-THINGSPEAKAPIKEY: " + String(ts_auth) + "\n");
-      client.print("Content-Type: application/x-www-form-urlencoded\n");
-      client.print("Content-Length: ");
-      client.print(postStr.length());
-      client.print("\n\n");
-      client.print(postStr);
-    //}
-    client.stop();
+     if (!client.connected()) {
+    reconnect();
+  }
+    client.loop();
+
+      client.publish(voltage_topic, String(Vrms1).c_str(), true);    //send voltage to MQTT
+      client.publish(power_topic, String(realPower1).c_str(), true);    //send voltage to MQTT
+      client.publish(current_topic, String(Crms1).c_str(), true);    //send voltage to MQTT
+      client.publish(powerFactor_topic, String(powerFactor1).c_str(), true);    //send voltage to MQTT
+      
   }
 }
-
 
 
 
@@ -468,11 +476,18 @@ void http_handleRoot() {
   webPage +=",\"eic1_ugain\":";
   webPage +=eic1_ugain;
 
+  webPage +=",\"MQTT_user\":";              //display MQTT data on web page
+  webPage +="\""+String(mqtt_user)+"\"";
+  webPage +=",\"MQTT_server\":";
+  webPage +="\""+String(mqtt_server)+"\"";
+ 
+/*
   webPage +=",\"ts_auth\":";
   webPage +="\""+String(ts_auth)+"\"";
   webPage +=",\"ts_server\":";
   webPage +="\""+String(ts_server)+"\"";
-  
+*/
+
   webPage +="};";
   
   webPage += " var arrayLength=netArray.length;var tblBody=document.getElementById(\"netT";
@@ -492,7 +507,7 @@ void http_handleRoot() {
 }
 
   
-void http_handleSet(){
+void http_handleSet(){                                      //needs to be changed to MQTT but not complete yet.
   if(strlen(server->arg("ts_auth").c_str())){
       strlcpy(ts_auth, server->arg("ts_auth").c_str(), sizeof(ts_auth));  
       DEBUG_PRINT("Setting ts_auth to:");
