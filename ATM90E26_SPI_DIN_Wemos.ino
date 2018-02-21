@@ -43,7 +43,7 @@ std::unique_ptr<ESP8266WebServer> server; //Define webserver
 
 //-----Config variables-----
   //MQTT Config
-  #define mqtt_server "192.168.0.0"
+  #define mqtt_server "192.168.0.2"
   #define mqtt_user "username"
   #define mqtt_password "password"
   #define mqtt_port 1883   
@@ -59,9 +59,9 @@ std::unique_ptr<ESP8266WebServer> server; //Define webserver
   char wifi_ssid[64]     = "SSID";
   char wifi_password[64] = "wifiPassword";
   
-  //Thingspeak
-//  char ts_server[50] = "api.thingspeak.com";            //this is not required for MQTT version
-//  char ts_auth[36] = "THINGSPEAK_KEY";// Sign up on thingspeak and get WRITE API KEY.  //this is not required for MQTT version
+  //Thingspeak              //Thingspeak not required for MQTT version
+ // char ts_server[50] = "api.thingspeak.com";
+ // char ts_auth[36] = "THINGSPEAK_KEY";// Sign up on thingspeak and get WRITE API KEY.
   
   //Calibration
   uint32_t eic1_ugain=0x6810;
@@ -207,16 +207,16 @@ void checkPins(){
 void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
+    DEBUG_PRINTLN("Attempting MQTT connection...");
     // Attempt to connect
     // If you do not want to use a username and password, change next line to
     // if (client.connect("ESP8266Client")) {
     if (client.connect(SENSORNAME, mqtt_user, mqtt_password)) {
-      Serial.println("connected");
+      DEBUG_PRINTLN("connected");
     } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
+      DEBUG_PRINTLN("failed, rc=");
+      DEBUG_PRINTLN(client.state());
+      DEBUG_PRINTLN(" try again in 5 seconds");
       // Wait 5 seconds before retrying
       delay(5000);
     }
@@ -250,7 +250,7 @@ void sendMQTT() {
 void readTSConfig()
 {
   //clean FS, for testing
-  //SPIFFS.format();
+  //SPIFFS.format();          // uncomment this line when programing the first time to clear config file
 
   //read configuration from FS json
   DEBUG_PRINTLN("mounting FS...");
@@ -273,8 +273,8 @@ void readTSConfig()
         json.printTo(Serial);
         if (json.success()) {
           DEBUG_PRINTLN("\nparsed json");
-          strcpy(ts_auth, json["ts_auth"]);
-          strcpy(ts_server, json["ts_server"]);
+          strcpy(mqtt_user, json["mqtt_user"]);
+          strcpy(mqtt_server, json["mqtt_server"]);
           strcpy(wifi_ssid, json["wifi_ssid"]);
           strcpy(wifi_password, json["wifi_password"]);
           eic1_ugain=json["eic1_ugain"];
@@ -313,8 +313,9 @@ void saveTSConfig()
   DynamicJsonBuffer jsonBuffer;
   JsonObject& json = jsonBuffer.createObject();
   
-  json["ts_auth"] = ts_auth;
-  json["ts_server"] = ts_server;
+  json["mqtt_user"] = mqtt_user;
+  json["mqtt_server"] = mqtt_server;
+  
   json["wifi_ssid"] = wifi_ssid;
   json["wifi_password"] = wifi_password;
 
@@ -476,7 +477,7 @@ void http_handleRoot() {
   webPage +=",\"eic1_ugain\":";
   webPage +=eic1_ugain;
 
-  webPage +=",\"MQTT_user\":";              //display MQTT data on web page
+  webPage +=",\"MQTT_user\":";
   webPage +="\""+String(mqtt_user)+"\"";
   webPage +=",\"MQTT_server\":";
   webPage +="\""+String(mqtt_server)+"\"";
@@ -507,17 +508,17 @@ void http_handleRoot() {
 }
 
   
-void http_handleSet(){                                      //needs to be changed to MQTT but not complete yet.
-  if(strlen(server->arg("ts_auth").c_str())){
-      strlcpy(ts_auth, server->arg("ts_auth").c_str(), sizeof(ts_auth));  
-      DEBUG_PRINT("Setting ts_auth to:");
-      DEBUG_PRINTLN(ts_auth);
+void http_handleSet(){
+  if(strlen(server->arg("mqtt_user").c_str())){
+      strlcpy(mqtt_user, server->arg("mqtt_user").c_str(), sizeof(mqtt_user));  
+      DEBUG_PRINT("Setting mqtt_user to:");
+      DEBUG_PRINTLN(mqtt_user);
     }
 
-    if(strlen(server->arg("ts_server").c_str())){
-      strlcpy(ts_server, server->arg("ts_server").c_str(), sizeof(ts_server));  
-      DEBUG_PRINT("Setting ts_server to:");
-      DEBUG_PRINTLN(ts_server);
+    if(strlen(server->arg("mqtt_server").c_str())){
+      strlcpy(mqtt_server, server->arg("mqtt_server").c_str(), sizeof(mqtt_server));  
+      DEBUG_PRINT("Setting mqtt_server to:");
+      DEBUG_PRINTLN(mqtt_server);
     }
     
     if(strlen(server->arg("wifi_ssid").c_str())){
