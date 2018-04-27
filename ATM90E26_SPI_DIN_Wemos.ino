@@ -12,10 +12,10 @@
   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
-#define DEBUG 1 //remove 1 to see serial debug via USB
+#define DEBUG  //remove 1 to see serial debug via USB
 
 #include <ESP8266WiFi.h>
-#include <FS.h> 
+#include <FS.h>
 #include <ArduinoJson.h>  //Config storage
 #include <ESP8266WebServer.h>
 #include <SPI.h>
@@ -35,46 +35,44 @@ PubSubClient client(espClient);
 #endif
 
 extern "C" {
-  #include "user_interface.h" //Enables system_get_chip_id used in SoftAP mode
+#include "user_interface.h" //Enables system_get_chip_id used in SoftAP mode
 }
 
 
 std::unique_ptr<ESP8266WebServer> server; //Define webserver
 
 //-----Config variables-----
-  //MQTT Config
-  #define mqtt_server "192.168.0.2"
-  #define mqtt_user "username"
-  #define mqtt_password "password"
-  #define mqtt_port 1883   
-  
-  /************* MQTT TOPICS (change these topics as you wish)  **************************/
-  #define voltage_topic "whatnick/voltage"
-  #define current_topic "whatnick/current"
-  #define power_topic "whatnick/power"
-  #define powerFactor_topic "whatnick/powerFactor"
-  #define SENSORNAME "whatnick"
+//MQTT Config
+#define mqtt_server "192.168.0.10"
+#define mqtt_user "mqttuser"
+#define mqtt_password "mqttpass"
+#define mqtt_port 1883
 
-  //Wifi
-  char wifi_ssid[64]     = "SSID";
-  char wifi_password[64] = "wifiPassword";
-  
-  //Thingspeak              //Thingspeak not required for MQTT version
- // char ts_server[50] = "api.thingspeak.com";
- // char ts_auth[36] = "THINGSPEAK_KEY";// Sign up on thingspeak and get WRITE API KEY.
-  
-  //Calibration
-  uint32_t eic1_ugain=0x6810;
-  uint32_t eic1_igain=0x7644;
-  uint32_t eic1_CRC1=0x410D;
-  uint32_t eic1_CRC2=0x0FD7;
-  
-  uint32_t eic2_ugain=0x6720;
-  uint32_t eic2_igain=0x7644;
-  uint32_t eic2_CRC1=0x410D;
-  uint32_t eic2_CRC2=0x30E6;
-  
-  
+/************* MQTT TOPICS (change these topics as you wish)  **************************/
+#define voltage_topic "whatnick/voltage"
+#define current_topic "whatnick/current"
+#define power_topic "whatnick/power"
+#define powerFactor_topic "whatnick/powerFactor"
+#define realCumulative_topic "whatnick/realCumulative"
+#define SENSORNAME "whatnick"
+#define CumulativeReset_topic "whatnick/set"
+
+//Wifi
+char wifi_ssid[64]     = "SSID";
+char wifi_password[64] = "password";
+
+//Calibration
+uint32_t eic1_ugain = 0x6810;
+uint32_t eic1_igain = 0x7644;
+uint32_t eic1_CRC1 = 0x410D;
+uint32_t eic1_CRC2 = 0x0FD7;
+
+uint32_t eic2_ugain = 0x6720;
+uint32_t eic2_igain = 0x7644;
+uint32_t eic2_CRC1 = 0x410D;
+uint32_t eic2_CRC2 = 0x30E6;
+
+
 
 //--------------------------
 
@@ -96,7 +94,7 @@ float v1, i1, r1, pf1, v2, i2, r2, pf2;
 short st1, st2;
 int sampleCount = 0;
 long curMillis, prevMillis;
-
+float realCumulative1, realCumulative2, realAverage1, realAverage2;
 
 //Setup OLED
 U8G2_SSD1306_64X48_ER_F_HW_I2C u8g2(U8G2_R0); // EastRising 0.66" OLED breakout board, Uno: A4=SDA, A5=SCL, 5V powered
@@ -141,7 +139,7 @@ void setup() {
   DEBUG_PRINTLN();
   DEBUG_PRINTLN();
   DEBUG_PRINTLN("Booting...");
-  
+
   //Show logo while wifi is set-up
   u8g2.begin();
 
@@ -153,16 +151,15 @@ void setup() {
 
   readTSConfig();
   wifi_attemptToConnect();
-  
+
   setupWebserver();
-  
-  delay(2000);  
+
+  delay(2000);
   client.setServer(mqtt_server, mqtt_port);
-  //client.setCallback(callback);
+  client.setCallback(callback);
 
   DEBUG_PRINTLN("Starting metering");
   setupMetering();
-
 
 }
 
@@ -170,18 +167,33 @@ void loop() {
 
   server->handleClient();       //Handle HTTP calls
 
-  
- /*Repeatedly fetch some values from the ATM90E26 */
+  //MQTT check connection
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  /*Repeatedly fetch some values from the ATM90E26 */
   curMillis = millis();
-//
+
   yield();
+
+  realAverage1 += r1;
+  realAverage2 += r2;
+
   if (sampleCount > 20)
   {
-   // sendThingSpeak();
+    // sendThingSpeak();
+    realAverage1 / sampleCount;
+    realAverage2 / sampleCount;
+
     sendMQTT();
+
     sampleCount = 0;
+    realAverage1 = 0;
+    realAverage2 = 0;
   }
-  if ((curMillis - prevMillis) > 500)
+  if ((curMillis - prevMillis) > 800)
   {
     u8g2.clearDisplay();
   }
@@ -194,15 +206,14 @@ void loop() {
 }
 
 
-void checkPins(){
-  if(!digitalRead(D4)){     //If button B on the oled is pressed, format the SPI file system and reset the unit - AKA Factory reset
+void checkPins() {
+  if (!digitalRead(D4)) {   //If button B on the oled is pressed, format the SPI file system and reset the unit - AKA Factory reset
     DEBUG_PRINTLN("Reset pin pressed, Formatting");
     SPIFFS.format();
     DEBUG_PRINTLN("Resetting unit");
     ESP.reset();
   }
 }
-
 
 void reconnect() {
   // Loop until we're reconnected
@@ -213,6 +224,8 @@ void reconnect() {
     // if (client.connect("ESP8266Client")) {
     if (client.connect(SENSORNAME, mqtt_user, mqtt_password)) {
       DEBUG_PRINTLN("connected");
+      client.subscribe(CumulativeReset_topic);
+
     } else {
       DEBUG_PRINTLN("failed, rc=");
       DEBUG_PRINTLN(client.state());
@@ -223,29 +236,74 @@ void reconnect() {
   }
 }
 
+
 void sendMQTT() {
   //TODO: Compute averages from last n-readings
+
+  DEBUG_PRINTLN("Sending data via MQTT");
+
   float Vrms1 = v1;
   float realPower1 = r1;
   float Crms1 = i1;
   float powerFactor1 = pf1;
+  realCumulative1 += realAverage1;
+  realCumulative2 += realAverage2;
 
-  if(WiFi.status() == WL_CONNECTED)
+
+  if (WiFi.status() == WL_CONNECTED)
   {
-     if (!client.connected()) {
-    reconnect();
-  }
+    if (!client.connected()) {
+      reconnect();
+    }
     client.loop();
 
-      client.publish(voltage_topic, String(Vrms1).c_str(), true);    //send voltage to MQTT
-      client.publish(power_topic, String(realPower1).c_str(), true);    //send voltage to MQTT
-      client.publish(current_topic, String(Crms1).c_str(), true);    //send voltage to MQTT
-      client.publish(powerFactor_topic, String(powerFactor1).c_str(), true);    //send voltage to MQTT
-      
+    //    WiFiClient espClient; // moved to top of code
+    //   const int httpPort = 80;
+    //   if (!client.connect(ts_server, 80)) {
+    //     DEBUG_PRINTLN("connection failed");
+    //    return;
+    //   }
+    //if (client.connect(ts_server, 80)) { //   "184.106.153.149" or api.thingspeak.com
+
+    client.publish(voltage_topic, String(Vrms1).c_str(), true);    //send voltage to MQTT
+    client.publish(power_topic, String(realPower1).c_str(), true);    //send power to MQTT
+    client.publish(current_topic, String(Crms1).c_str(), true);    //send current to MQTT
+    client.publish(powerFactor_topic, String(powerFactor1).c_str(), true);    //send power Factor to MQTT
+    client.publish(realCumulative_topic, String(realCumulative1).c_str(), true);    //send Cumulative total power to MQTT
+
+    //}
+    //   client.stop();
   }
 }
 
+/********************************** START CALLBACK*****************************************/
+//https://www.baldengineer.com/mqtt-tutorial.html
+void callback(char* topic, byte* payload, unsigned int length) {
+  //print out message to serial monitor
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
 
+  //print payload of message to serail monitor
+  for (int i = 0; i < length; i++) {
+    char receivedChar = (char)payload[i];
+    Serial.print(receivedChar);
+  }
+
+  Serial.println();
+
+  //compate topic name to realCumulative_topic.
+  if (strcmp(topic, CumulativeReset_topic) == 0)
+    // if payload in CumulativeReset_topic = 0 then reset then realCumulative1 value
+    for (int i = 0; i < length; i++) {
+      char receivedChar = (char)payload[i];
+      if (receivedChar == '0')
+        DEBUG_PRINTLN("Reset realCumulative value");
+      realCumulative1 = 0;
+      realCumulative2 = 0;
+    }
+
+}
 
 void readTSConfig()
 {
@@ -253,7 +311,7 @@ void readTSConfig()
   //SPIFFS.format();          // uncomment this line when programing the first time to clear config file
 
   //read configuration from FS json
-  DEBUG_PRINTLN("mounting FS...");
+  //DEBUG_PRINTLN("mounting FS...");
 
   if (SPIFFS.begin()) {
     DEBUG_PRINTLN("mounted file system");
@@ -277,24 +335,24 @@ void readTSConfig()
           strcpy(mqtt_server, json["mqtt_server"]);
           strcpy(wifi_ssid, json["wifi_ssid"]);
           strcpy(wifi_password, json["wifi_password"]);
-          eic1_ugain=json["eic1_ugain"];
-          eic1_igain=json["eic1_igain"];
-          eic1_CRC2=json["eic1_CRC2"];
-          eic1_CRC1=json["eic1_CRC1"];
+          eic1_ugain = json["eic1_ugain"];
+          eic1_igain = json["eic1_igain"];
+          eic1_CRC2 = json["eic1_CRC2"];
+          eic1_CRC1 = json["eic1_CRC1"];
 
-          eic2_ugain=json["eic2_ugain"];
-          eic2_igain=json["eic2_igain"];
-          eic2_CRC2=json["eic2_CRC2"];
-          eic2_CRC1=json["eic2_CRC1"];
+          eic2_ugain = json["eic2_ugain"];
+          eic2_igain = json["eic2_igain"];
+          eic2_CRC2 = json["eic2_CRC2"];
+          eic2_CRC1 = json["eic2_CRC1"];
 
-          
+
         } else {
           DEBUG_PRINTLN("failed to load json config");
         }
-      } 
+      }
     } else {
-       DEBUG_PRINTLN("No config present, saving defaults");
-       saveTSConfig();
+      DEBUG_PRINTLN("No config present, saving defaults");
+      saveTSConfig();
     }
   } else {
     DEBUG_PRINTLN("failed to mount FS");
@@ -312,26 +370,29 @@ void saveTSConfig()
   DEBUG_PRINTLN("saving config");
   DynamicJsonBuffer jsonBuffer;
   JsonObject& json = jsonBuffer.createObject();
-  
+
+  //  json["ts_auth"] = ts_auth;
+  //  json["ts_server"] = ts_server;
+
   json["mqtt_user"] = mqtt_user;
   json["mqtt_server"] = mqtt_server;
-  
+
   json["wifi_ssid"] = wifi_ssid;
   json["wifi_password"] = wifi_password;
 
 
-  json["eic2_ugain"]=eic2_ugain;
-  json["eic2_igain"]=eic2_igain;
-  json["eic2_CRC2"]=eic2_CRC2;
-  json["eic2_CRC1"]=eic2_CRC1;
+  json["eic2_ugain"] = eic2_ugain;
+  json["eic2_igain"] = eic2_igain;
+  json["eic2_CRC2"] = eic2_CRC2;
+  json["eic2_CRC1"] = eic2_CRC1;
 
 
-  json["eic1_ugain"]=eic1_ugain;
-  json["eic1_igain"]=eic1_igain;
-  json["eic1_CRC2"]=eic1_CRC2;
-  json["eic1_CRC1"]=eic1_CRC1;
+  json["eic1_ugain"] = eic1_ugain;
+  json["eic1_igain"] = eic1_igain;
+  json["eic1_CRC2"] = eic1_CRC2;
+  json["eic1_CRC1"] = eic1_CRC1;
 
-  
+
   File configFile = SPIFFS.open("/configv2.json", "w");
   if (!configFile) {
     DEBUG_PRINTLN("failed to open config file for writing");
@@ -354,54 +415,54 @@ void saveTSConfig()
 
 
 
-void wifi_attemptToConnect(){
+void wifi_attemptToConnect() {
 
-  if(wifi_ssid[0]==0){
+  if (wifi_ssid[0] == 0) {
     DEBUG_PRINTLN("No Network defined, starting AP");
     wifi_startSoftAP();
     return;
   }
   DEBUG_PRINTLN("Connecting to ");
   DEBUG_PRINTLN(wifi_ssid);
-  
+
   WiFi.mode(WIFI_STA);
   WiFi.begin(wifi_ssid, wifi_password);
 
-  int loopcount=0;
-  bool tryAgain=true;
+  int loopcount = 0;
+  bool tryAgain = true;
   while (tryAgain) {
     delay(750);
     DEBUG_PRINTLN("Attemping connection..");
     loopcount++;
-    
-    if(WiFi.status() == WL_CONNECTED){
-        tryAgain=false; //WiFi is connected, set the tryAgain flag to false so we exit to main loop
+
+    if (WiFi.status() == WL_CONNECTED) {
+      tryAgain = false; //WiFi is connected, set the tryAgain flag to false so we exit to main loop
     }
 
     //Give up after 10 attempts and boot the softAP
-    if(loopcount>20){
+    if (loopcount > 20) {
       DEBUG_PRINTLN("Unable to connect to configured network, starting AP");
       wifi_startSoftAP();
-      tryAgain=false;   //Dont run this loop again
+      tryAgain = false; //Dont run this loop again
     }
 
-    
+
   }
 
 
-  DEBUG_PRINTLN("WiFi connected");  
+  DEBUG_PRINTLN("WiFi connected");
   DEBUG_PRINTLN("IP address: ");
   DEBUG_PRINTLN(WiFi.localIP());
-  
+
 }
 
 
-void wifi_startSoftAP(){
-  String ap_name_str = "EMON_"+String(system_get_chip_id(),HEX);
+void wifi_startSoftAP() {
+  String ap_name_str = "EMON_" + String(system_get_chip_id(), HEX);
   DEBUG_PRINT("Configuring access point on SSID:");
   DEBUG_PRINTLN(ap_name_str);
   WiFi.softAP(ap_name_str.c_str());  //No password
-  
+
   IPAddress myIP = WiFi.softAPIP();
   DEBUG_PRINT("AP IP address: ");
   DEBUG_PRINTLN(myIP);
@@ -409,8 +470,8 @@ void wifi_startSoftAP(){
 }
 
 
-void http_handleReset(){
-  server->send(200, "text/plain","Resetting...");
+void http_handleReset() {
+  server->send(200, "text/plain", "Resetting...");
   DEBUG_PRINTLN("Resetting");
   ESP.reset();
 }
@@ -418,8 +479,8 @@ void http_handleReset(){
 
 void http_handleRoot() {
 
-  String Wifi_SSID="var netArray = [";
-  String Wifi_RSSI="var rSSI = [";
+  String Wifi_SSID = "var netArray = [";
+  String Wifi_RSSI = "var rSSI = [";
   int n = WiFi.scanNetworks();
   DEBUG_PRINTLN("scan done");
   if (n == 0)
@@ -428,16 +489,16 @@ void http_handleRoot() {
   {
     for (int i = 0; i < n; ++i)
     {
-      Wifi_SSID+="\"";
-      Wifi_SSID+=WiFi.SSID(i);
-      Wifi_SSID+="\",";
+      Wifi_SSID += "\"";
+      Wifi_SSID += WiFi.SSID(i);
+      Wifi_SSID += "\",";
 
-      Wifi_RSSI+="\"";
-      Wifi_RSSI+=WiFi.RSSI(i);
-      Wifi_RSSI+="\",";
-   }
-    Wifi_SSID+="];";
-    Wifi_RSSI+="];";
+      Wifi_RSSI += "\"";
+      Wifi_RSSI += WiFi.RSSI(i);
+      Wifi_RSSI += "\",";
+    }
+    Wifi_SSID += "];";
+    Wifi_RSSI += "];";
   }
 
   //Code minified using - https://github.com/LuckyMallari/html-minifier
@@ -455,42 +516,42 @@ void http_handleRoot() {
   webPage += "ody\"></tbody></table><br>SSID:<input id=\"txt_ssid\" type=\"text\" name=\"";
   webPage += "wifi_ssid\" />Password:<input type=\"text\" name=\"wifi_password\" /><br><h";
   webPage += "2>Other Options:</h2><br></form></div></body><script>";
-  
-  webPage +=Wifi_SSID;
-  webPage +=Wifi_RSSI;
-  webPage +="var optionals={\"";
-  webPage +="eic2_CRC2\":";
-  webPage +=eic2_CRC2;
-  webPage +=",\"eic2_CRC1\":";
-  webPage +=eic2_CRC1;
-  webPage +=",\"eic2_igain\":";
-  webPage +=eic2_igain;
-  webPage +=",\"eic2_ugain\":";
-  webPage +=eic2_ugain;
-  
-  webPage +=",\"eic1_CRC2\":";
-  webPage +=eic1_CRC2;
-  webPage +=",\"eic1_CRC1\":";
-  webPage +=eic1_CRC1;
-  webPage +=",\"eic1_igain\":";
-  webPage +=eic1_igain;
-  webPage +=",\"eic1_ugain\":";
-  webPage +=eic1_ugain;
 
-  webPage +=",\"MQTT_user\":";
-  webPage +="\""+String(mqtt_user)+"\"";
-  webPage +=",\"MQTT_server\":";
-  webPage +="\""+String(mqtt_server)+"\"";
- 
-/*
-  webPage +=",\"ts_auth\":";
-  webPage +="\""+String(ts_auth)+"\"";
-  webPage +=",\"ts_server\":";
-  webPage +="\""+String(ts_server)+"\"";
-*/
+  webPage += Wifi_SSID;
+  webPage += Wifi_RSSI;
+  webPage += "var optionals={\"";
+  webPage += "eic2_CRC2\":";
+  webPage += eic2_CRC2;
+  webPage += ",\"eic2_CRC1\":";
+  webPage += eic2_CRC1;
+  webPage += ",\"eic2_igain\":";
+  webPage += eic2_igain;
+  webPage += ",\"eic2_ugain\":";
+  webPage += eic2_ugain;
 
-  webPage +="};";
-  
+  webPage += ",\"eic1_CRC2\":";
+  webPage += eic1_CRC2;
+  webPage += ",\"eic1_CRC1\":";
+  webPage += eic1_CRC1;
+  webPage += ",\"eic1_igain\":";
+  webPage += eic1_igain;
+  webPage += ",\"eic1_ugain\":";
+  webPage += eic1_ugain;
+
+  webPage += ",\"MQTT_user\":";
+  webPage += "\"" + String(mqtt_user) + "\"";
+  webPage += ",\"MQTT_server\":";
+  webPage += "\"" + String(mqtt_server) + "\"";
+
+  /*
+    webPage +=",\"ts_auth\":";
+    webPage +="\""+String(ts_auth)+"\"";
+    webPage +=",\"ts_server\":";
+    webPage +="\""+String(ts_server)+"\"";
+  */
+
+  webPage += "};";
+
   webPage += " var arrayLength=netArray.length;var tblBody=document.getElementById(\"netT";
   webPage += "ableBody\");var tableText=\"\";for(var i=0;i<arrayLength;i++){var text=\"<t";
   webPage += "r><td><a id=\"+i+\" onClick='reply_click(this.id)' href=#>\"+netArray[i]+\"";
@@ -504,85 +565,85 @@ void http_handleRoot() {
   webPage += "\"beforeend\",\"<br><a href='/update'>Click here to upload new firmware</a>";
   webPage += "\");</script></html>";
   server->send(200, "text/html", webPage);
-    
+
 }
 
-  
-void http_handleSet(){
-  if(strlen(server->arg("mqtt_user").c_str())){
-      strlcpy(mqtt_user, server->arg("mqtt_user").c_str(), sizeof(mqtt_user));  
-      DEBUG_PRINT("Setting mqtt_user to:");
-      DEBUG_PRINTLN(mqtt_user);
-    }
 
-    if(strlen(server->arg("mqtt_server").c_str())){
-      strlcpy(mqtt_server, server->arg("mqtt_server").c_str(), sizeof(mqtt_server));  
-      DEBUG_PRINT("Setting mqtt_server to:");
-      DEBUG_PRINTLN(mqtt_server);
-    }
-    
-    if(strlen(server->arg("wifi_ssid").c_str())){
-      strlcpy(wifi_ssid, server->arg("wifi_ssid").c_str(), sizeof(wifi_ssid));  
-      DEBUG_PRINT("Setting wifi_ssid to:");
-      DEBUG_PRINTLN(wifi_ssid);
-    } 
+void http_handleSet() {
+  if (strlen(server->arg("mqtt_user").c_str())) {
+    strlcpy(mqtt_user, server->arg("mqtt_user").c_str(), sizeof(mqtt_user));
+    DEBUG_PRINT("Setting mqtt_user to:");
+    DEBUG_PRINTLN(mqtt_user);
+  }
 
-    if(strlen(server->arg("wifi_password").c_str())){
-      strlcpy(wifi_password, server->arg("wifi_password").c_str(), sizeof(wifi_password));  
-      DEBUG_PRINT("Setting wifi_password to:");
-      DEBUG_PRINTLN(wifi_password);
-    } 
+  if (strlen(server->arg("mqtt_server").c_str())) {
+    strlcpy(mqtt_server, server->arg("mqtt_server").c_str(), sizeof(mqtt_server));
+    DEBUG_PRINT("Setting mqtt_server to:");
+    DEBUG_PRINTLN(mqtt_server);
+  }
 
+  if (strlen(server->arg("wifi_ssid").c_str())) {
+    strlcpy(wifi_ssid, server->arg("wifi_ssid").c_str(), sizeof(wifi_ssid));
+    DEBUG_PRINT("Setting wifi_ssid to:");
+    DEBUG_PRINTLN(wifi_ssid);
+  }
 
-    if(strlen(server->arg("eic2_ugain").c_str())){
-       eic2_ugain = atoi(server->arg("eic2_ugain").c_str());
-       DEBUG_PRINT("Setting eic2_ugain to:");
-       DEBUG_PRINTLN(eic2_ugain);
-    }
-    if(strlen(server->arg("eic2_igain").c_str())){
-       eic2_igain = atoi(server->arg("eic2_igain").c_str());
-       DEBUG_PRINT("Setting eic2_igain to:");
-       DEBUG_PRINTLN(eic2_igain);
-    }
-    if(strlen(server->arg("eic2_CRC1").c_str())){
-       eic2_CRC1 = atoi(server->arg("eic2_CRC1").c_str());
-       DEBUG_PRINT("Setting eic2_CRC1 to:");
-       DEBUG_PRINTLN(eic2_CRC1);
-    }
-    if(strlen(server->arg("eic2_CRC2").c_str())){
-       eic2_CRC2 = atoi(server->arg("eic2_CRC2").c_str());
-       DEBUG_PRINT("Setting eic2_CRC2 to:");
-       DEBUG_PRINTLN(eic2_CRC2);
-    }            
-
-  
-    if(strlen(server->arg("eic1_ugain").c_str())){
-       eic1_ugain = atoi(server->arg("eic1_ugain").c_str());
-       DEBUG_PRINT("Setting eic1_ugain to:");
-       DEBUG_PRINTLN(eic1_ugain);
-    }
-    if(strlen(server->arg("eic1_igain").c_str())){
-       eic1_igain = atoi(server->arg("eic1_igain").c_str());
-       DEBUG_PRINT("Setting eic1_igain to:");
-       DEBUG_PRINTLN(eic1_igain);
-    }
-    if(strlen(server->arg("eic1_CRC1").c_str())){
-       eic1_CRC1 = atoi(server->arg("eic1_CRC1").c_str());
-       DEBUG_PRINT("Setting eic1_CRC1 to:");
-       DEBUG_PRINTLN(eic1_CRC1);
-    }
-    if(strlen(server->arg("eic1_CRC2").c_str())){
-       eic1_CRC2 = atoi(server->arg("eic1_CRC2").c_str());
-       DEBUG_PRINT("Setting eic1_CRC2 to:");
-       DEBUG_PRINTLN(eic1_CRC2);
-    } 
+  if (strlen(server->arg("wifi_password").c_str())) {
+    strlcpy(wifi_password, server->arg("wifi_password").c_str(), sizeof(wifi_password));
+    DEBUG_PRINT("Setting wifi_password to:");
+    DEBUG_PRINTLN(wifi_password);
+  }
 
 
-    server->send(200, "text/plain","Saved settings..Rebooting");
-    delay(100);
-    saveTSConfig();
-   
-    
+  if (strlen(server->arg("eic2_ugain").c_str())) {
+    eic2_ugain = atoi(server->arg("eic2_ugain").c_str());
+    DEBUG_PRINT("Setting eic2_ugain to:");
+    DEBUG_PRINTLN(eic2_ugain);
+  }
+  if (strlen(server->arg("eic2_igain").c_str())) {
+    eic2_igain = atoi(server->arg("eic2_igain").c_str());
+    DEBUG_PRINT("Setting eic2_igain to:");
+    DEBUG_PRINTLN(eic2_igain);
+  }
+  if (strlen(server->arg("eic2_CRC1").c_str())) {
+    eic2_CRC1 = atoi(server->arg("eic2_CRC1").c_str());
+    DEBUG_PRINT("Setting eic2_CRC1 to:");
+    DEBUG_PRINTLN(eic2_CRC1);
+  }
+  if (strlen(server->arg("eic2_CRC2").c_str())) {
+    eic2_CRC2 = atoi(server->arg("eic2_CRC2").c_str());
+    DEBUG_PRINT("Setting eic2_CRC2 to:");
+    DEBUG_PRINTLN(eic2_CRC2);
+  }
+
+
+  if (strlen(server->arg("eic1_ugain").c_str())) {
+    eic1_ugain = atoi(server->arg("eic1_ugain").c_str());
+    DEBUG_PRINT("Setting eic1_ugain to:");
+    DEBUG_PRINTLN(eic1_ugain);
+  }
+  if (strlen(server->arg("eic1_igain").c_str())) {
+    eic1_igain = atoi(server->arg("eic1_igain").c_str());
+    DEBUG_PRINT("Setting eic1_igain to:");
+    DEBUG_PRINTLN(eic1_igain);
+  }
+  if (strlen(server->arg("eic1_CRC1").c_str())) {
+    eic1_CRC1 = atoi(server->arg("eic1_CRC1").c_str());
+    DEBUG_PRINT("Setting eic1_CRC1 to:");
+    DEBUG_PRINTLN(eic1_CRC1);
+  }
+  if (strlen(server->arg("eic1_CRC2").c_str())) {
+    eic1_CRC2 = atoi(server->arg("eic1_CRC2").c_str());
+    DEBUG_PRINT("Setting eic1_CRC2 to:");
+    DEBUG_PRINTLN(eic1_CRC2);
+  }
+
+
+  server->send(200, "text/plain", "Saved settings..Rebooting");
+  delay(100);
+  saveTSConfig();
+
+
 }
 
 void http_handleNotFound() {
@@ -605,76 +666,72 @@ void http_handleNotFound() {
 
 
 //HTTP Section
-void setupWebserver(){
+void setupWebserver() {
   DEBUG_PRINTLN("Starting webserver...");
-  
+
   //Setup the runtime webserver
   server.reset(new ESP8266WebServer(WiFi.localIP(), 80));
 
   server->on("/", http_handleRoot);
-  
+
   server->on("/set", http_handleSet);
-  
+
   server->on("/reset", http_handleReset);
 
   server->on("/update", http_handleUpdate);
-  
-  
+
+
   server->onNotFound(http_handleNotFound);
-  
+
   http_setupUpdate();
-  
+
   server->begin();
   DEBUG_PRINTLN("HTTP server started");
- 
+
 }
 
 
-void http_handleUpdate(){
+void http_handleUpdate() {
   const char* serverIndex = "<form method='POST' action='/doupdate' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>";
-   server->send(200, "text/html",serverIndex);
+  server->send(200, "text/html", serverIndex);
 }
-void http_setupUpdate(){
-  server->on("/doupdate", HTTP_POST, [](){
-      server->sendHeader("Connection", "close");
-      server->sendHeader("Access-Control-Allow-Origin", "*");
-      server->send(200, "text/plain", (Update.hasError())?"FAIL":"OK");
-      ESP.restart();
-    },[](){
-      HTTPUpload& upload = server->upload();
-      if(upload.status == UPLOAD_FILE_START){
-        Serial.setDebugOutput(true);
-//        WiFiUDP::stopAll();
-        Serial.printf("Update: %s\n", upload.filename.c_str());
-        uint32_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
-        if(!Update.begin(maxSketchSpace)){//start with max available size
-          Update.printError(Serial);
-        }
-      } else if(upload.status == UPLOAD_FILE_WRITE){
-        if(Update.write(upload.buf, upload.currentSize) != upload.currentSize){
-          Update.printError(Serial);
-        }
-      } else if(upload.status == UPLOAD_FILE_END){
-        if(Update.end(true)){ //true to set the size to the current progress
-          Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
-        } else {
-          Update.printError(Serial);
-        }
-        Serial.setDebugOutput(false);
+void http_setupUpdate() {
+  server->on("/doupdate", HTTP_POST, []() {
+    server->sendHeader("Connection", "close");
+    server->sendHeader("Access-Control-Allow-Origin", "*");
+    server->send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
+    ESP.restart();
+  }, []() {
+    HTTPUpload& upload = server->upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      Serial.setDebugOutput(true);
+      //        WiFiUDP::stopAll();
+      Serial.printf("Update: %s\n", upload.filename.c_str());
+      uint32_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+      if (!Update.begin(maxSketchSpace)) { //start with max available size
+        Update.printError(Serial);
       }
-      yield();
-    });
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_END) {
+      if (Update.end(true)) { //true to set the size to the current progress
+        Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
+      } else {
+        Update.printError(Serial);
+      }
+      Serial.setDebugOutput(false);
+    }
+    yield();
+  });
 }
 
 
 
 
-
-
-
-
-void setupMetering(){
-   /*Initialise the ATM90E26 + SPI port */
+void setupMetering() {
+  /*Initialise the ATM90E26 + SPI port */
   eic1.SetLGain(0x240b);
   eic1.SetUGain(eic1_ugain);
   eic1.SetIGain(eic1_igain);
