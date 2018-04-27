@@ -183,9 +183,6 @@ void loop() {
 
   yield();
 
-  realAverage1 += r1;
-  realAverage2 += r2;
-
   if (sampleCount > 20)
   {
     // sendThingSpeak();
@@ -204,6 +201,9 @@ void loop() {
   }
   if ((curMillis - prevMillis) > 1000)
   {
+     realAverage1 += r1;        //whoops I had this in the main void loop
+     realAverage2 += r2;
+
     readMeterDisplay();
     sampleCount++;
   }
