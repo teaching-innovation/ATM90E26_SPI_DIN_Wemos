@@ -43,7 +43,7 @@ std::unique_ptr<ESP8266WebServer> server; //Define webserver
 
 //-----Config variables-----
 //MQTT Config
-#define mqtt_server "192.168.0.1"
+#define mqtt_server "192.168.0.2"
 #define mqtt_user "mqttUser"
 #define mqtt_password "mqttPass"
 #define mqtt_port 1883
@@ -59,7 +59,7 @@ std::unique_ptr<ESP8266WebServer> server; //Define webserver
 
 //Wifi
 char wifi_ssid[64]     = "SSID";
-char wifi_password[64] = "password";
+char wifi_password[64] = "pass";
 
 //Calibration
 uint32_t eic1_ugain = 0x6810;
@@ -71,7 +71,6 @@ uint32_t eic2_ugain = 0x6720;
 uint32_t eic2_igain = 0x7644;
 uint32_t eic2_CRC1 = 0x410D;
 uint32_t eic2_CRC2 = 0x30E6;
-
 
 
 //--------------------------
@@ -94,9 +93,9 @@ float v1, i1, r1, pf1, v2, i2, r2, pf2;
 short st1, st2;
 int sampleCount = 0;
 long curMillis, prevMillis;
-float  realAverage1, realAverage2; //not required: realCumulative1, realCumulative2,
+float  realAverage1, realAverage2, powerSum1, powerSum2;
 unsigned long startMillis, endMillis;
-double KWh1, KWh2;
+double kWh1, kWh2;
 
 //Setup OLED
 U8G2_SSD1306_64X48_ER_F_HW_I2C u8g2(U8G2_R0); // EastRising 0.66" OLED breakout board, Uno: A4=SDA, A5=SCL, 5V powered
@@ -164,8 +163,6 @@ void setup() {
   setupMetering();
   startMillis = millis();
 
-
-
 }
 
 void loop() {
@@ -186,25 +183,25 @@ void loop() {
   if (sampleCount > 20)
   {
     // sendThingSpeak();
-    realAverage1 / sampleCount;
-    realAverage2 / sampleCount;
+    realAverage1 = powerSum1 / sampleCount;         //fixed the error with this calculation 
+    realAverage2 = powerSum2 / sampleCount;
 
     sendMQTT();
 
     sampleCount = 0;
-    realAverage1 = 0;
-    realAverage2 = 0;
+    powerSum1 = 0;
+    powerSum2 = 0;
   }
-  if ((curMillis - prevMillis) > 800)
+  if ((curMillis - prevMillis) > 500)
   {
     u8g2.clearDisplay();
   }
   if ((curMillis - prevMillis) > 1000)
   {
-     realAverage1 += r1;        //whoops I had this in the main void loop
-     realAverage2 += r2;
-
     readMeterDisplay();
+    powerSum1 += r1;
+    powerSum2 += r2;
+
     sampleCount++;
   }
   checkPins();
@@ -230,7 +227,7 @@ void reconnect() {
     // if (client.connect("ESP8266Client")) {
     if (client.connect(SENSORNAME, mqtt_user, mqtt_password)) {
       DEBUG_PRINTLN("connected");
-      client.subscribe(CumulativeReset_topic);
+      client.subscribe(CumulativeReset_topic);          //chose appropriate topic name in line 58
 
     } else {
       DEBUG_PRINTLN("failed, rc=");
@@ -245,20 +242,18 @@ void reconnect() {
 void sendMQTT() {
   //TODO: Compute averages from last n-readings
 
-  DEBUG_PRINTLN("Sending data via MQTT");
+  // DEBUG_PRINTLN("Sending data via MQTT");
 
   float Vrms1 = v1;
   float realPower1 = r1;
   float Crms1 = i1;
   float powerFactor1 = pf1;
-  //realCumulative1 += realAverage1;
-  //realCumulative2 += realAverage2;
 
   //idea from http://www.the-diy-life.com/simple-arduino-home-energy-meter/
   endMillis = millis();
-  unsigned long time = endMillis - startMillis;
-  KWh1 = KWh1 + ((double)realAverage1 * ((double)time / 60 / 60 / 1000000)); //Calculate kilowatt hours used
-  KWh2 = KWh2 + ((double)realAverage2 * ((double)time / 60 / 60 / 1000000)); //Calculate kilowatt hours used
+  unsigned long time1 = endMillis - startMillis;
+  kWh1 += ((double)realAverage1 * ((double)time1 / 60 / 60 / 1000000)); //Calculate kilowatt hours used
+  kWh2 += ((double)realAverage2 * ((double)time1 / 60 / 60 / 1000000)); //Calculate kilowatt hours used
   startMillis = millis();
 
 
@@ -269,22 +264,12 @@ void sendMQTT() {
     }
     client.loop();
 
-    //    WiFiClient espClient; // moved to top of code
-    //   const int httpPort = 80;
-    //   if (!client.connect(ts_server, 80)) {
-    //     DEBUG_PRINTLN("connection failed");
-    //    return;
-    //   }
-    //if (client.connect(ts_server, 80)) { //   "184.106.153.149" or api.thingspeak.com
-
     client.publish(voltage_topic, String(Vrms1).c_str(), true);    //send voltage to MQTT
-    client.publish(power_topic, String(realPower1).c_str(), true);    //send power to MQTT
+    client.publish(power_topic, String(realPower1).c_str(), true);    //send power to MQTT   
     client.publish(current_topic, String(Crms1).c_str(), true);    //send current to MQTT
     client.publish(powerFactor_topic, String(powerFactor1).c_str(), true);    //send power Factor to MQTT
-    client.publish(realCumulative_topic, String(KWh1).c_str(), true);    //send Cumulative total power to MQTT
+    client.publish(realCumulative_topic, String(kWh1).c_str(), true);    //send Cumulative total power to MQTT
 
-    //}
-    //   client.stop();
   }
 }
 
@@ -310,9 +295,9 @@ void callback(char* topic, byte* payload, unsigned int length) {
     for (int i = 0; i < length; i++) {
       char receivedChar = (char)payload[i];
       if (receivedChar == '0')
-        DEBUG_PRINTLN("Reset realCumulative value");
-      KWh1 = 0;
-      KWh2 = 0;
+        DEBUG_PRINTLN("Reset Cumulative kWh values");
+      kWh1 = 0;
+      kWh2 = 0;
     }
 
 }
@@ -373,8 +358,6 @@ void readTSConfig()
 }
 
 
-
-
 void saveTSConfig()
 {
   //save the custom parameters to FS
@@ -420,13 +403,6 @@ void saveTSConfig()
 }
 
 
-
-
-
-
-
-
-
 void wifi_attemptToConnect() {
 
   if (wifi_ssid[0] == 0) {
@@ -457,10 +433,8 @@ void wifi_attemptToConnect() {
       wifi_startSoftAP();
       tryAgain = false; //Dont run this loop again
     }
-
-
+      
   }
-
 
   DEBUG_PRINTLN("WiFi connected");
   DEBUG_PRINTLN("IP address: ");
@@ -554,13 +528,6 @@ void http_handleRoot() {
   webPage += "\"" + String(mqtt_user) + "\"";
   webPage += ",\"MQTT_server\":";
   webPage += "\"" + String(mqtt_server) + "\"";
-
-  /*
-    webPage +=",\"ts_auth\":";
-    webPage +="\""+String(ts_auth)+"\"";
-    webPage +=",\"ts_server\":";
-    webPage +="\""+String(ts_server)+"\"";
-  */
 
   webPage += "};";
 
